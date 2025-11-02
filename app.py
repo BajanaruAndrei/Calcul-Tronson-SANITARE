@@ -1,7 +1,7 @@
 import streamlit as st
 import math
-import pandas as pd  # Necesar pentru tabele și Excel
-import io          # <-- NOU: Necesar pentru a crea fișierul în memorie
+import pandas as pd
+import io 
 
 # ======================================================================
 # PARTEA 1: DATELE DIN NORMATIVUL I9-2022 (Neschimbată)
@@ -52,6 +52,7 @@ FORMULE_METODA_C = {
 # [cite_start]SIMULARE NOMOGRAMA [cite: 2989-3057]
 NOMOGRAMA_PPR = [
     # Vc_max, De-g,   v,   i (Pa/m)
+    [0.0001, "N/A", 0, 0], # Valoare de start pentru XLOOKUP
     [0.20, "20-1.7", 0.9, 600],
     [0.39, "25-1.9", 1.0, 650],
     [0.55, "32-2.2", 0.9, 475],
@@ -63,7 +64,7 @@ NOMOGRAMA_PPR = [
 ]
 
 # ======================================================================
-# PARTEA 2: FUNCȚII HELPER
+# PARTEA 2: FUNCȚII HELPER (MODIFICATE)
 # ======================================================================
 
 def get_dimensiune_teava(Vc):
@@ -94,27 +95,117 @@ def delete_fixture(id_to_delete):
 
 def update_tronson_name():
     """ Sincronizează starea aplicației cu ce scrie utilizatorul în căsuță. """
-    st.session_state.tronson_name = st.session_state.tronson_name_input
+    if 'tronson_name_input' in st.session_state:
+        st.session_state.tronson_name = st.session_state.tronson_name_input
 
-# --- NOU: Funcție pentru a converti DataFrame în Excel ---
-def to_excel(df):
+# --- MODIFICAT: Funcție complexă pentru a crea Excel-ul cu formule ---
+def to_excel_with_formulas(tronsons_list):
     """
-    Converteste un DataFrame pandas intr-un fisier Excel in memorie.
+    Converteste lista de tronsoane salvate intr-un fisier Excel
+    care contine formulele de calcul.
     """
     output_buffer = io.BytesIO()
-    # Folosim engine='xlsxwriter' pentru a putea formata coloanele
     with pd.ExcelWriter(output_buffer, engine='xlsxwriter') as writer:
-        df.to_excel(writer, index=False, sheet_name='Tronson_Calcul')
-        
-        # (Bonus) Ajustare automată a lățimii coloanelor
         workbook = writer.book
-        worksheet = writer.sheets['Tronson_Calcul']
-        for i, col in enumerate(df.columns):
-            # Găsește lățimea maximă a coloanei
-            column_len = max(df[col].astype(str).map(len).max(), len(col)) + 2
-            worksheet.set_column(i, i, column_len)
+        
+        # --- Foaia 1: Tronson_Calcul ---
+        worksheet = workbook.add_worksheet('Tronson_Calcul')
+        
+        # Format pentru headere
+        header_format = workbook.add_format({
+            'bold': True,
+            'text_wrap': True,
+            'valign': 'top',
+            'fg_color': '#007a7a',
+            'font_color': 'white',
+            'border': 1
+        })
+
+        # Definirea Headerelor
+        # Am adăugat coloane intermediare pentru calcule (F, G, H)
+        headers = [
+            'Nume Tronson', 'Metodă', 'Obiecte', 'N (buc)', 
+            'Unitati_Total (Ui sau E)', 'Vs_total_val (l/s)', 'factor_e_val', 'min_e_val',
+            'Vc (l/s) [CALCULAT]', 'De-g (mm) [CALCULAT]', 'v (m/s) [CALCULAT]', 'i (Pa/m) [CALCULAT]'
+        ]
+        
+        # Scrierea Headerelor
+        for col_num, value in enumerate(headers):
+            worksheet.write(0, col_num, value, header_format)
+
+        # Scrierea datelor și formulelor
+        for row_idx, tronson in enumerate(tronsons_list):
+            row_num_excel = row_idx + 2  # +1 pt 0-index, +1 pt header
             
-    # Preluăm datele binare ale fișierului creat
+            # Celulele de referință
+            metoda_cell = f'B{row_num_excel}'
+            n_cell = f'D{row_num_excel}'
+            unit_cell = f'E{row_num_excel}' # Acesta este U_total sau E_total
+            vs_cell = f'F{row_num_excel}'
+            factor_e_cell = f'G{row_num_excel}'
+            min_e_cell = f'H{row_num_excel}'
+            vc_cell = f'I{row_num_excel}' # Celulă unde va fi rezultatul Vc
+
+            # 1. Scrie datele statice (inputurile)
+            worksheet.write(row_idx + 1, 0, tronson['Nume Tronson'])
+            worksheet.write(row_idx + 1, 1, tronson['Metodă'])
+            worksheet.write(row_idx + 1, 2, tronson['Obiecte'])
+            worksheet.write(row_idx + 1, 3, tronson['N (buc)'])
+            worksheet.write(row_idx + 1, 4, tronson['Unitati_Total_Val']) # Scriem valoarea numerică
+            worksheet.write(row_idx + 1, 5, tronson.get('Vs_total_val'))
+            worksheet.write(row_idx + 1, 6, tronson.get('factor_e_val'))
+            worksheet.write(row_idx + 1, 7, tronson.get('min_e_val'))
+
+            # 2. Scrie FORMULA complexă pentru Vc (Coloana I)
+            # IF(N>1, 0.83/SQRT(N-1), 1)
+            far_formula = f"IF({n_cell}>1, 0.83/SQRT({n_cell}-1), 1)" 
+            # IF(U<15, (Vs*fAR)+0.03, Vs*fAR)
+            vc_locuit_formula = f"IF({n_cell}=1, {vs_cell}, IF({unit_cell}<15, ({vs_cell}*{far_formula})+0.03, {vs_cell}*{far_formula}))"
+            # IF(E<min_e, 0.2*E, factor_e*SQRT(E))
+            vc_alte_formula = f"IF({unit_cell}<{min_e_cell}, 0.2*{unit_cell}, {factor_e_cell}*SQRT({unit_cell}))"
+            
+            # IF(contine "Locuit", formula_locuit, formula_alte)
+            final_vc_formula = f'=IF(ISNUMBER(FIND("Locuit",{metoda_cell})), {vc_locuit_formula}, {vc_alte_formula})'
+            worksheet.write_formula(row_idx + 1, 8, final_vc_formula)
+
+            # 3. Scrie FORMULELE XLOOKUP pentru Nomogramă (Coloanele J, K, L)
+            # =XLOOKUP(Vc_cell, 'Nomograma_Data'!$A$2:$A$10, 'Nomograma_Data'!$B$2:$B$10, "PREA MARE", 1)
+            de_g_formula = f'=XLOOKUP({vc_cell}, Nomograma_Data!$A$2:$A$10, Nomograma_Data!$B$2:$B$10, "PREA MARE", 1)'
+            v_formula = f'=XLOOKUP({vc_cell}, Nomograma_Data!$A$2:$A$10, Nomograma_Data!$C$2:$C$10, -1, 1)'
+            i_formula = f'=XLOOKUP({vc_cell}, Nomograma_Data!$A$2:$A$10, Nomograma_Data!$D$2:$D$10, -1, 1)'
+            
+            worksheet.write_formula(row_idx + 1, 9, de_g_formula)
+            worksheet.write_formula(row_idx + 1, 10, v_formula)
+            worksheet.write_formula(row_idx + 1, 11, i_formula)
+
+        # Ajustare automată a lățimii coloanelor
+        worksheet.set_column(0, 0, 15) # Nume Tronson
+        worksheet.set_column(1, 1, 25) # Metodă
+        worksheet.set_column(2, 2, 40) # Obiecte
+        worksheet.set_column(3, 4, 12) # N, Unitati
+        worksheet.set_column(5, 7, 12, None, {'hidden': True}) # Ascundem coloanele intermediare F,G,H
+        worksheet.set_column(8, 11, 18) # Coloanele de rezultate
+        
+        # --- Foaia 2: Nomograma_Data (ascunsă) ---
+        nomo_sheet = workbook.add_worksheet('Nomograma_Data')
+        
+        # Scriem datele din nomogramă
+        nomo_sheet.write(0, 0, 'Vc_max_l/s', header_format)
+        nomo_sheet.write(0, 1, 'De_g_mm', header_format)
+        nomo_sheet.write(0, 2, 'v_m/s', header_format)
+        nomo_sheet.write(0, 3, 'i_Pa/m', header_format)
+        
+        for row_num, row_data in enumerate(NOMOGRAMA_PPR):
+            for col_num, cell_data in enumerate(row_data):
+                nomo_sheet.write(row_num + 1, col_num, cell_data)
+                
+        # Ascundem foaia
+        nomo_sheet.hide()
+
+    # Închidem scriitorul Excel
+    writer.close()
+    
+    # Returnăm datele binare ale fișierului
     excel_data = output_buffer.getvalue()
     return excel_data
 
@@ -148,7 +239,6 @@ def run_app():
         key="building_type_selector"
     )
 
-    # Resetăm rândurile de obiecte dacă se schimbă tipul clădirii
     if 'last_building_type' not in st.session_state:
         st.session_state.last_building_type = building_type_key
 
@@ -225,6 +315,7 @@ def run_app():
         Vs_total = 0
         Vc = 0.0
         inputs_list_str = []
+        formula_data = {} # Stocare date pentru Metoda C
 
         # 1. Însumare totaluri
         for fixture_data in st.session_state.fixtures.values():
@@ -296,17 +387,16 @@ def run_app():
                 f"- **Pierdere Liniară (i): {teava['i']:.0f} Pa/m**"
             )
 
-            # 5. Salvarea datelor tronsonului
+            # 5. MODIFICAT: Salvarea datelor tronsonului (inclusiv date intermediare)
             tronson_data = {
                 'Nume Tronson': st.session_state.tronson_name_input,
                 'Metodă': calcul_summary.get("Metodă", ""),
                 'Obiecte': ", ".join(inputs_list_str),
                 'N (buc)': N_total,
-                f"{unit_label} Total": f"{U_total:.2f}" if building_type_key == 'locuit' else f"{E_total:.2f}",
-                'Vc (l/s)': f"{Vc:.3f}",
-                'De-g (mm)': teava['De_g'],
-                'v (m/s)': f"{teava['v']:.2f}",
-                'i (Pa/m)': f"{teava['i']:.0f}"
+                'Unitati_Total_Val': U_total if building_type_key == 'locuit' else E_total, # Valoarea numerică
+                'Vs_total_val': Vs_total if building_type_key == 'locuit' else None,
+                'factor_e_val': formula_data.get('factor_e') if building_type_key == 'alte' else None,
+                'min_e_val': formula_data.get('min_e') if building_type_key == 'alte' else None,
             }
             st.session_state.saved_tronsons.append(tronson_data)
 
@@ -332,23 +422,64 @@ def run_app():
     if not st.session_state.saved_tronsons:
         st.info("Niciun tronson salvat. Calculează un tronson pentru a-l adăuga în listă.")
     else:
-        df = pd.DataFrame(st.session_state.saved_tronsons)
+        # Creăm un DataFrame DOAR pentru afișare, fără coloanele intermediare
+        df_display_data = []
+        for tronson in st.session_state.saved_tronsons:
+            # Re-calculăm Vc și țeava pentru afișare (deoarece nu le-am salvat)
+            # Acest lucru e OK, deoarece `st.session_state.saved_tronsons` conține inputurile
+            temp_N = tronson['N (buc)']
+            temp_U = tronson['Unitati_Total_Val'] if "Locuit" in tronson['Metodă'] else 0
+            temp_E = tronson['Unitati_Total_Val'] if "Metoda C" in tronson['Metodă'] else 0
+            temp_Vs = tronson['Vs_total_val']
+            temp_factor_e = tronson['factor_e_val']
+            temp_min_e = tronson['min_e_val']
+            temp_Vc = 0
+            
+            if "Locuit" in tronson['Metodă']:
+                f_AR = 1.0
+                if temp_N > 1: f_AR = 0.83 / math.sqrt(temp_N - 1)
+                if temp_N == 1:
+                    temp_Vc = temp_Vs
+                elif temp_U < 15:
+                    temp_Vc = (temp_Vs * f_AR) + 0.03
+                else:
+                    temp_Vc = temp_Vs * f_AR
+            else: # Metoda C
+                if temp_E < temp_min_e:
+                    temp_Vc = 0.2 * temp_E
+                else:
+                    temp_Vc = temp_factor_e * math.sqrt(temp_E)
+            
+            teava = get_dimensiune_teava(temp_Vc)
+            
+            df_display_data.append({
+                'Nume Tronson': tronson['Nume Tronson'],
+                'Metodă': tronson['Metodă'],
+                'Obiecte': tronson['Obiecte'],
+                'N (buc)': tronson['N (buc)'],
+                'Unitati_Total': tronson['Unitati_Total_Val'],
+                'Vc (l/s)': f"{temp_Vc:.3f}",
+                'De-g (mm)': teava['De_g'],
+                'v (m/s)': f"{teava['v']:.2f}",
+                'i (Pa/m)': f"{teava['i']:.0f}"
+            })
+
+        df = pd.DataFrame(df_display_data)
         st.dataframe(df, use_container_width=True)
         
-        # --- NOU: Butonul de descărcare Excel ---
-        # 1. Creăm fișierul Excel în memorie
-        excel_data = to_excel(df)
+        # --- MODIFICAT: Butonul de descărcare Excel ---
+        # 1. Creăm fișierul Excel în memorie (trimițând lista originală cu datele intermediare)
+        excel_data = to_excel_with_formulas(st.session_state.saved_tronsons)
         
         # 2. Oferim fișierul la descărcat
         st.download_button(
-            label="📥 Descarcă Lista Tronsoanelor (.xlsx)",
+            label="📥 Descarcă Lista Tronsoanelor (.xlsx) cu Formule",
             data=excel_data,
-            file_name="dimensionare_tronsoane.xlsx",
+            file_name="dimensionare_tronsoane_automatizat.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
         )
         
-        # --- Butonul de ștergere (existent) ---
         if st.button("Șterge Toate Tronsoanele", type="secondary"):
             st.session_state.saved_tronsons = []
             st.session_state.tronson_name = "Tronson 1"
