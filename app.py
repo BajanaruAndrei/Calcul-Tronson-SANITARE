@@ -1,9 +1,9 @@
 import streamlit as st
 import math
-import pandas as pd  # <-- Am adăugat importul PANDAS pentru tabele frumoase
+import pandas as pd  # Necesar pentru st.dataframe
 
 # ======================================================================
-# PARTEA 1: DATELE DIN NORMATIVUL I9-2022 (Neschimbată)
+# PARTEA 1: DATELE DIN NORMATIVUL I9-2022
 # ======================================================================
 
 # [cite_start]Date conform ANEXA 2.1A (Clădiri de locuit) [cite: 2383-2387]
@@ -48,7 +48,7 @@ FORMULE_METODA_C = {
     'vestiare_productie': {'nume': 'Grupuri sanitare vestiare producție', 'factor_e': 0.90, 'min_e': 20.0}
 }
 
-# [cite_start]SIMULARE NOMOGRAMA (Neschimbată) [cite: 2989-3057]
+# [cite_start]SIMULARE NOMOGRAMA [cite: 2989-3057]
 NOMOGRAMA_PPR = [
     # Vc_max, De-g,   v,   i (Pa/m)
     [0.20, "20-1.7", 0.9, 600],
@@ -62,7 +62,7 @@ NOMOGRAMA_PPR = [
 ]
 
 # ======================================================================
-# PARTEA 2: FUNCȚII HELPER (Neschimbate)
+# PARTEA 2: FUNCȚII HELPER
 # ======================================================================
 
 def get_dimensiune_teava(Vc):
@@ -79,7 +79,10 @@ def get_dimensiune_teava(Vc):
 def add_fixture():
     """ Adaugă un rând nou pentru un obiect sanitar în session_state. """
     new_id = st.session_state.next_id
-    st.session_state.fixtures[new_id] = {'key': list(DATE_LOCUIT.keys())[0], 'count': 1}
+    
+    # Determină cheia primului obiect din lista activă (locuit sau alte)
+    default_key_list = list(DATE_LOCUIT.keys()) if st.session_state.building_type_selector == 'locuit' else list(DATE_ALTE_CLADIRI.keys())
+    st.session_state.fixtures[new_id] = {'key': default_key_list[0], 'count': 1}
     st.session_state.next_id += 1
 
 def delete_fixture(id_to_delete):
@@ -93,8 +96,15 @@ def delete_fixture(id_to_delete):
         
     st.rerun() # Forțează redesenarea
 
+def update_tronson_name():
+    """ 
+    *** FUNCȚIE NOUĂ ***
+    Sincronizează starea aplicației cu ce scrie utilizatorul în căsuță.
+    """
+    st.session_state.tronson_name = st.session_state.tronson_name_input
+
 # ======================================================================
-# PARTEA 3: INTERFAȚA STREAMLIT (Cu modificări)
+# PARTEA 3: INTERFAȚA STREAMLIT
 # ======================================================================
 
 def run_app():
@@ -102,15 +112,17 @@ def run_app():
     st.title("🚰 Calculator Dimensionare I9-2022")
     st.write("Realizat de **Gem de Sanitare** pe baza Normativului I9-2022.")
 
-    # --- Inițializare Session State (Am adăugat 'saved_tronsons' și 'tronson_name') ---
+    # --- Inițializare Session State ---
     if 'fixtures' not in st.session_state:
         st.session_state.fixtures = {0: {'key': 'lavoar_princ', 'count': 1}}
     if 'next_id' not in st.session_state:
         st.session_state.next_id = 1
     if 'saved_tronsons' not in st.session_state:
-        st.session_state.saved_tronsons = [] # <-- NOU: Lista pentru tronsoane salvate
+        st.session_state.saved_tronsons = []
     if 'tronson_name' not in st.session_state:
-        st.session_state.tronson_name = "Tronson 1" # <-- NOU: Numele tronsonului curent
+        st.session_state.tronson_name = "Tronson 1"
+    if 'building_type_selector' not in st.session_state:
+        st.session_state.building_type_selector = 'locuit'
 
     # --- INPUTURI (în Sidebar) ---
     st.sidebar.header("1. Selectare Tronson")
@@ -118,17 +130,18 @@ def run_app():
         "Tip Clădire:",
         options=['locuit', 'alte'],
         format_func=lambda x: "Clădire de locuit (Metoda B)" if x == 'locuit' else "Alte clădiri (Metoda C)",
-        key="building_type_selector" # Adăugăm o cheie
+        key="building_type_selector" # Cheia principală de selecție
     )
 
     # Resetăm rândurile de obiecte dacă se schimbă tipul clădirii
-    # Verificăm dacă tipul selectat e diferit de cel salvat (dacă există unul salvat)
     if 'last_building_type' not in st.session_state:
         st.session_state.last_building_type = building_type_key
 
     if st.session_state.last_building_type != building_type_key:
         st.session_state.last_building_type = building_type_key
-        st.session_state.fixtures = {0: {'key': list(DATE_LOCUIT.keys())[0], 'count': 1}}
+        # Resetăm la starea inițială
+        default_key_list = list(DATE_LOCUIT.keys()) if building_type_key == 'locuit' else list(DATE_ALTE_CLADIRI.keys())
+        st.session_state.fixtures = {0: {'key': default_key_list[0], 'count': 1}}
         st.session_state.next_id = 1
         st.rerun()
 
@@ -157,13 +170,11 @@ def run_app():
     fixture_keys = list(active_data.keys())
     fixture_names = [active_data[key]['nume'] for key in fixture_keys]
 
-    # Parcurgem dictionarul de obiecte din session_state
-    for fixture_id, fixture_data in list(st.session_state.fixtures.items()): # Folosim list() pentru a permite ștergerea
+    for fixture_id, fixture_data in list(st.session_state.fixtures.items()):
         
         current_key = fixture_data['key']
-        # Verificăm dacă cheia există în setul de date activ
         if current_key not in active_data:
-            current_key = fixture_keys[0] # Resetăm la prima opțiune
+            current_key = fixture_keys[0]
             st.session_state.fixtures[fixture_id]['key'] = current_key
 
         current_index = fixture_keys.index(current_key)
@@ -188,8 +199,13 @@ def run_app():
 
     st.divider()
 
-    # --- NOU: Câmp pentru numele tronsonului ---
-    st.text_input("Numele Tronsonului de calculat:", key="tronson_name")
+    # --- MODIFICAT: Câmp pentru numele tronsonului ---
+    st.text_input(
+        "Numele Tronsonului de calculat:",
+        value=st.session_state.tronson_name,      # 1. Valoarea afișată e din starea noastră
+        key="tronson_name_input",                  # 2. Folosim o cheie internă, diferită
+        on_change=update_tronson_name              # 3. Sincronizăm când utilizatorul tastează
+    )
     
     # --- Butonul de Calcul și Afișarea Rezultatelor ---
     if st.button("Calculează și Salvează Tronsonul", type="primary", use_container_width=True):
@@ -200,7 +216,7 @@ def run_app():
         E_total = 0
         Vs_total = 0
         Vc = 0.0
-        inputs_list_str = [] # Listă pentru a stoca obiectele adăugate
+        inputs_list_str = []
 
         # 1. Însumare totaluri
         for fixture_data in st.session_state.fixtures.values():
@@ -209,10 +225,8 @@ def run_app():
             
             if not key or count <= 0: continue
             
-            # Adăugăm la lista de inputuri pentru salvare
             nume_obiect = active_data.get(key, {}).get('nume', 'Necunoscut')
             inputs_list_str.append(f"{count}x {nume_obiect}")
-
             N_total += count
             
             if building_type_key == 'locuit':
@@ -239,7 +253,7 @@ def run_app():
             calcul_summary["Factor Simultan. (f_AR)"] = f"{f_AR:.4f}"
 
             if U_total < 15:
-                # [cite_start]Verificare Metoda A [cite: 723]
+                # [cite_start]Verificare Metoda A [cite: 2907]
                 Dmin_metodaA = -0.035 * (U_total**2) + 1.4 * U_total + 10.9
                 st.info(f"**Verificare Metoda A (pentru U < 15):**\nDiametrul Minim Interior (Dmin) = **{Dmin_metodaA:.2f} mm**")
 
@@ -288,9 +302,9 @@ def run_app():
                 f"- **Pierdere Liniară (i): {teava['i']:.0f} Pa/m**"
             )
 
-            # 5. NOU: Salvarea datelor tronsonului
+            # 5. Salvarea datelor tronsonului
             tronson_data = {
-                'Nume Tronson': st.session_state.tronson_name,
+                'Nume Tronson': st.session_state.tronson_name_input, # Folosim valoarea din widget
                 'Metodă': calcul_summary.get("Metodă", ""),
                 'Obiecte': ", ".join(inputs_list_str),
                 'N (buc)': N_total,
@@ -302,35 +316,36 @@ def run_app():
             }
             st.session_state.saved_tronsons.append(tronson_data)
 
-            # NOU: Incrementarea automată a numelui tronsonului
+            # 6. Incrementarea automată a numelui tronsonului
             try:
-                # Încearcă să găsească un număr la finalul numelui
-                parts = st.session_state.tronson_name.split(' ')
+                current_name = st.session_state.tronson_name_input
+                parts = current_name.split(' ')
                 num = int(parts[-1])
                 base_name = " ".join(parts[:-1])
+                # Acum este sigur să modificăm st.session_state.tronson_name
                 st.session_state.tronson_name = f"{base_name} {num + 1}"
             except:
-                # Dacă eșuează (ex: numele era "Coloana"), adaugă "2"
-                st.session_state.tronson_name = f"{st.session_state.tronson_name} 2"
+                st.session_state.tronson_name = f"{current_name} 2"
         
         else:
             st.error("Debitul de calcul este prea mare pentru nomograma predefinită (>DN90).")
+        
+        # --- MODIFICAT: Adăugăm st.rerun() ---
+        st.rerun() # Forțează reîncărcarea pentru a afișa noul nume și tabelul actualizat
 
-    # --- NOU: SECȚIUNEA PENTRU AFISAREA TRONSOANELOR SALVATE ---
+    # --- SECȚIUNEA PENTRU AFISAREA TRONSOANELOR SALVATE ---
     st.divider()
     st.header("4. Tronsoane Salvate în Sesiune")
 
     if not st.session_state.saved_tronsons:
         st.info("Niciun tronson salvat. Calculează un tronson pentru a-l adăuga în listă.")
     else:
-        # Folosim Pandas DataFrame pentru un tabel frumos
         df = pd.DataFrame(st.session_state.saved_tronsons)
         st.dataframe(df, use_container_width=True)
         
-        # Buton pentru a șterge lista
         if st.button("Șterge Toate Tronsoanele", type="secondary"):
             st.session_state.saved_tronsons = []
-            st.session_state.tronson_name = "Tronson 1" # Resetăm și numele
+            st.session_state.tronson_name = "Tronson 1"
             st.rerun()
 
 # Punctul de intrare al aplicației
