@@ -1,9 +1,10 @@
 import streamlit as st
 import math
-import pandas as pd  # Necesar pentru st.dataframe
+import pandas as pd  # Necesar pentru tabele și Excel
+import io          # <-- NOU: Necesar pentru a crea fișierul în memorie
 
 # ======================================================================
-# PARTEA 1: DATELE DIN NORMATIVUL I9-2022
+# PARTEA 1: DATELE DIN NORMATIVUL I9-2022 (Neschimbată)
 # ======================================================================
 
 # [cite_start]Date conform ANEXA 2.1A (Clădiri de locuit) [cite: 2383-2387]
@@ -79,8 +80,6 @@ def get_dimensiune_teava(Vc):
 def add_fixture():
     """ Adaugă un rând nou pentru un obiect sanitar în session_state. """
     new_id = st.session_state.next_id
-    
-    # Determină cheia primului obiect din lista activă (locuit sau alte)
     default_key_list = list(DATE_LOCUIT.keys()) if st.session_state.building_type_selector == 'locuit' else list(DATE_ALTE_CLADIRI.keys())
     st.session_state.fixtures[new_id] = {'key': default_key_list[0], 'count': 1}
     st.session_state.next_id += 1
@@ -89,19 +88,35 @@ def delete_fixture(id_to_delete):
     """ Șterge un rând de obiect sanitar din session_state. """
     if id_to_delete in st.session_state.fixtures:
         del st.session_state.fixtures[id_to_delete]
-        
-    # Dacă nu mai există niciun rând, adaugă unul gol
     if not st.session_state.fixtures:
         add_fixture()
-        
-    st.rerun() # Forțează redesenarea
+    st.rerun()
 
 def update_tronson_name():
-    """ 
-    *** FUNCȚIE NOUĂ ***
-    Sincronizează starea aplicației cu ce scrie utilizatorul în căsuță.
-    """
+    """ Sincronizează starea aplicației cu ce scrie utilizatorul în căsuță. """
     st.session_state.tronson_name = st.session_state.tronson_name_input
+
+# --- NOU: Funcție pentru a converti DataFrame în Excel ---
+def to_excel(df):
+    """
+    Converteste un DataFrame pandas intr-un fisier Excel in memorie.
+    """
+    output_buffer = io.BytesIO()
+    # Folosim engine='xlsxwriter' pentru a putea formata coloanele
+    with pd.ExcelWriter(output_buffer, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False, sheet_name='Tronson_Calcul')
+        
+        # (Bonus) Ajustare automată a lățimii coloanelor
+        workbook = writer.book
+        worksheet = writer.sheets['Tronson_Calcul']
+        for i, col in enumerate(df.columns):
+            # Găsește lățimea maximă a coloanei
+            column_len = max(df[col].astype(str).map(len).max(), len(col)) + 2
+            worksheet.set_column(i, i, column_len)
+            
+    # Preluăm datele binare ale fișierului creat
+    excel_data = output_buffer.getvalue()
+    return excel_data
 
 # ======================================================================
 # PARTEA 3: INTERFAȚA STREAMLIT
@@ -130,7 +145,7 @@ def run_app():
         "Tip Clădire:",
         options=['locuit', 'alte'],
         format_func=lambda x: "Clădire de locuit (Metoda B)" if x == 'locuit' else "Alte clădiri (Metoda C)",
-        key="building_type_selector" # Cheia principală de selecție
+        key="building_type_selector"
     )
 
     # Resetăm rândurile de obiecte dacă se schimbă tipul clădirii
@@ -139,13 +154,11 @@ def run_app():
 
     if st.session_state.last_building_type != building_type_key:
         st.session_state.last_building_type = building_type_key
-        # Resetăm la starea inițială
         default_key_list = list(DATE_LOCUIT.keys()) if building_type_key == 'locuit' else list(DATE_ALTE_CLADIRI.keys())
         st.session_state.fixtures = {0: {'key': default_key_list[0], 'count': 1}}
         st.session_state.next_id = 1
         st.rerun()
 
-    # Alege setul de date și unitatea de măsură corectă
     if building_type_key == 'locuit':
         active_data = DATE_LOCUIT
         unit_label = "Ui"
@@ -153,7 +166,6 @@ def run_app():
         active_data = DATE_ALTE_CLADIRI
         unit_label = "E"
 
-    # Afișează subtipul de clădire DOAR dacă e Metoda C
     subtype_key = None
     if building_type_key == 'alte':
         subtype_key = st.sidebar.selectbox(
@@ -161,7 +173,6 @@ def run_app():
             options=list(FORMULE_METODA_C.keys()),
             format_func=lambda x: FORMULE_METODA_C[x]['nume']
         )
-
     st.sidebar.divider()
     
     # --- Formularul Dinamic pentru Obiecte Sanitare ---
@@ -171,14 +182,12 @@ def run_app():
     fixture_names = [active_data[key]['nume'] for key in fixture_keys]
 
     for fixture_id, fixture_data in list(st.session_state.fixtures.items()):
-        
         current_key = fixture_data['key']
         if current_key not in active_data:
             current_key = fixture_keys[0]
             st.session_state.fixtures[fixture_id]['key'] = current_key
 
         current_index = fixture_keys.index(current_key)
-
         col1, col2, col3 = st.columns([4, 1, 1])
         
         selected_name = col1.selectbox(
@@ -196,15 +205,14 @@ def run_app():
         col3.button("❌", key=f"del_{fixture_id}", on_click=delete_fixture, args=(fixture_id,))
 
     st.button("➕ Adaugă Obiect Sanitar", on_click=add_fixture)
-
     st.divider()
 
-    # --- MODIFICAT: Câmp pentru numele tronsonului ---
+    # --- Câmp pentru numele tronsonului (Corectat) ---
     st.text_input(
         "Numele Tronsonului de calculat:",
-        value=st.session_state.tronson_name,      # 1. Valoarea afișată e din starea noastră
-        key="tronson_name_input",                  # 2. Folosim o cheie internă, diferită
-        on_change=update_tronson_name              # 3. Sincronizăm când utilizatorul tastează
+        value=st.session_state.tronson_name,
+        key="tronson_name_input",
+        on_change=update_tronson_name
     )
     
     # --- Butonul de Calcul și Afișarea Rezultatelor ---
@@ -222,7 +230,6 @@ def run_app():
         for fixture_data in st.session_state.fixtures.values():
             key = fixture_data['key']
             count = fixture_data['count']
-            
             if not key or count <= 0: continue
             
             nume_obiect = active_data.get(key, {}).get('nume', 'Necunoscut')
@@ -241,46 +248,33 @@ def run_app():
         
         # 2. Aplicare logică de calcul I9
         if building_type_key == 'locuit':
-            # --- METODA A & B (Locuit) ---
             calcul_summary["Metodă"] = "Metoda B (Locuit)"
             calcul_summary["Total Unit. Consum (U)"] = f"{U_total:.2f}"
             calcul_summary["Total Obiecte (N)"] = N_total
             calcul_summary["Total Debit Specific (Vs_tot)"] = f"{Vs_total:.2f} l/s"
 
             f_AR = 1.0
-            if N_total > 1:
-                f_AR = 0.83 / math.sqrt(N_total - 1)
+            if N_total > 1: f_AR = 0.83 / math.sqrt(N_total - 1)
             calcul_summary["Factor Simultan. (f_AR)"] = f"{f_AR:.4f}"
 
             if U_total < 15:
-                # [cite_start]Verificare Metoda A [cite: 2907]
                 Dmin_metodaA = -0.035 * (U_total**2) + 1.4 * U_total + 10.9
                 st.info(f"**Verificare Metoda A (pentru U < 15):**\nDiametrul Minim Interior (Dmin) = **{Dmin_metodaA:.2f} mm**")
-
-                # [cite_start]Calcul Metoda B.1 [cite: 777-781]
-                if N_total == 1:
-                    Vc = Vs_total
-                else:
-                    Vc = (Vs_total * f_AR) + 0.03
+                Vc = Vs_total if N_total == 1 else (Vs_total * f_AR) + 0.03
                 calcul_summary["Calcul Vc (B.1)"] = f"({Vs_total:.2f} * {f_AR:.4f}) + 0.03"
-            
             else:
-                # [cite_start]Calcul Metoda B.2 [cite: 789-791]
                 Vc = Vs_total * f_AR
                 calcul_summary["Calcul Vc (B.2)"] = f"{Vs_total:.2f} * {f_AR:.4f}"
 
         else:
-            # --- METODA C (Alte Clădiri) ---
             formula_data = FORMULE_METODA_C[subtype_key]
             calcul_summary["Metodă"] = f"Metoda C ({formula_data['nume']})"
             calcul_summary["Total Echivalenți (E)"] = f"{E_total:.2f}"
             
             if E_total < formula_data['min_e']:
-                # [cite_start]Sub pragul minim [cite: 807-808]
                 Vc = 0.2 * E_total
                 calcul_summary["Calcul Vc"] = f"(E < {formula_data['min_e']}, Vc = 0.2 * E)"
             else:
-                # [cite_start]Peste prag [cite: 803-806]
                 Vc = formula_data['factor_e'] * math.sqrt(E_total)
                 calcul_summary["Calcul Vc"] = f"({formula_data['factor_e']} * sqrt({E_total:.2f}))"
         
@@ -304,7 +298,7 @@ def run_app():
 
             # 5. Salvarea datelor tronsonului
             tronson_data = {
-                'Nume Tronson': st.session_state.tronson_name_input, # Folosim valoarea din widget
+                'Nume Tronson': st.session_state.tronson_name_input,
                 'Metodă': calcul_summary.get("Metodă", ""),
                 'Obiecte': ", ".join(inputs_list_str),
                 'N (buc)': N_total,
@@ -322,7 +316,6 @@ def run_app():
                 parts = current_name.split(' ')
                 num = int(parts[-1])
                 base_name = " ".join(parts[:-1])
-                # Acum este sigur să modificăm st.session_state.tronson_name
                 st.session_state.tronson_name = f"{base_name} {num + 1}"
             except:
                 st.session_state.tronson_name = f"{current_name} 2"
@@ -330,8 +323,7 @@ def run_app():
         else:
             st.error("Debitul de calcul este prea mare pentru nomograma predefinită (>DN90).")
         
-        # --- MODIFICAT: Adăugăm st.rerun() ---
-        st.rerun() # Forțează reîncărcarea pentru a afișa noul nume și tabelul actualizat
+        st.rerun()
 
     # --- SECȚIUNEA PENTRU AFISAREA TRONSOANELOR SALVATE ---
     st.divider()
@@ -343,6 +335,20 @@ def run_app():
         df = pd.DataFrame(st.session_state.saved_tronsons)
         st.dataframe(df, use_container_width=True)
         
+        # --- NOU: Butonul de descărcare Excel ---
+        # 1. Creăm fișierul Excel în memorie
+        excel_data = to_excel(df)
+        
+        # 2. Oferim fișierul la descărcat
+        st.download_button(
+            label="📥 Descarcă Lista Tronsoanelor (.xlsx)",
+            data=excel_data,
+            file_name="dimensionare_tronsoane.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+        
+        # --- Butonul de ștergere (existent) ---
         if st.button("Șterge Toate Tronsoanele", type="secondary"):
             st.session_state.saved_tronsons = []
             st.session_state.tronson_name = "Tronson 1"
